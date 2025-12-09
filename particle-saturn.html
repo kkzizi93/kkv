@@ -1,0 +1,607 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="theme-color" content="#000000">
+    <meta name="mobile-web-app-capable" content="yes">
+    <title>粒子土星 - 手势控制</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: 'Arial', sans-serif;
+            background: #000;
+            color: #fff;
+            overflow: hidden;
+            user-select: none;
+            touch-action: none; /* 禁用默认触摸行为 */
+        }
+        
+        #container {
+            position: relative;
+            width: 100vw;
+            height: 100vh;
+        }
+        
+        canvas {
+            display: block;
+            background: radial-gradient(ellipse at center, #1a1a2e 0%, #0f0f1e 50%, #000 100%);
+            width: 100%;
+            height: 100%;
+        }
+        
+        #camera {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            width: 120px;
+            height: 90px;
+            border: 2px solid rgba(255, 255, 255, 0.3);
+            border-radius: 8px;
+            z-index: 10;
+            object-fit: cover;
+            backdrop-filter: blur(5px);
+        }
+        
+        /* 移动端适配 */
+        @media (max-width: 768px) {
+            #camera {
+                width: 100px;
+                height: 75px;
+            }
+            
+            .btn {
+                padding: 12px 24px;
+                font-size: 16px;
+            }
+            
+            .info {
+                font-size: 14px;
+                padding: 10px 20px;
+            }
+            
+            .spinner {
+                width: 60px;
+                height: 60px;
+            }
+        }
+        
+        .controls {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            z-index: 10;
+        }
+        
+        .btn {
+            background: rgba(255, 255, 255, 0.1);
+            border: 1px solid rgba(255, 255, 255, 0.3);
+            color: #fff;
+            padding: 8px 16px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 14px;
+            backdrop-filter: blur(10px);
+            transition: all 0.3s ease;
+            -webkit-tap-highlight-color: transparent; /* 移除移动端点击高亮 */
+        }
+        
+        .btn:hover {
+            background: rgba(255, 255, 255, 0.2);
+            transform: translateY(-2px);
+        }
+        
+        .btn:active {
+            transform: translateY(0);
+            background: rgba(255, 255, 255, 0.3);
+        }
+        
+        .info {
+            position: absolute;
+            bottom: 10px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: rgba(0, 0, 0, 0.5);
+            padding: 8px 16px;
+            border-radius: 20px;
+            font-size: 12px;
+            backdrop-filter: blur(10px);
+            z-index: 10;
+            text-align: center;
+        }
+        
+        /* 加载动画 */
+        .loading {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            z-index: 20;
+            text-align: center;
+        }
+        
+        .spinner {
+            width: 50px;
+            height: 50px;
+            border: 3px solid rgba(255, 255, 255, 0.3);
+            border-top: 3px solid #fff;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 10px;
+        }
+        
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body>
+    <div id="container">
+        <div class="loading" id="loading">
+            <div class="spinner"></div>
+            <p>正在初始化摄像头...</p>
+        </div>
+        
+        <video id="camera" autoplay playsinline></video>
+        
+        <div class="controls">
+            <button class="btn" id="fullscreen">全屏</button>
+        </div>
+        
+        <div class="info" id="info">
+            手势控制：手掌张合调整土星大小
+        </div>
+        
+        <canvas id="canvas"></canvas>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils@0.3.1633559471/camera_utils.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils@0.3.1620280061/drawing_utils.min.js"></script>
+    <script>
+        // 配置参数
+        const CONFIG = {
+            PARTICLE_COUNT: 2000,
+            CORE_PARTICLES: 300,
+            RING_PARTICLES: 1700,
+            MAX_DISTANCE: 300,
+            MIN_DISTANCE: 50,
+            GRAVITY: 0.01,
+            BASE_SPEED: 0.02,
+            NOISE_THRESHOLD: 0.8,
+            BURST_THRESHOLD: 0.9,
+            BRIGHTNESS_MIN: 0.3,
+            BRIGHTNESS_MAX: 1.0
+        };
+
+        // 全局变量
+        let canvas, ctx, video, detector;
+        let particles = [];
+        let palmOpenness = 0.5;
+        let scale = 1;
+        let brightness = CONFIG.BRIGHTNESS_MAX;
+        let animationId;
+        let isFullscreen = false;
+
+        // 粒子类
+        class Particle {
+            constructor(type, x, y, vx, vy, radius, color) {
+                this.type = type; // 'core' or 'ring'
+                this.x = x;
+                this.y = y;
+                this.vx = vx;
+                this.vy = vy;
+                this.radius = radius;
+                this.color = color;
+                this.originalRadius = radius;
+                this.angle = Math.random() * Math.PI * 2;
+                this.distance = Math.random() * CONFIG.MAX_DISTANCE;
+                this.speed = CONFIG.BASE_SPEED / Math.sqrt(this.distance); // 开普勒第二定律：面积速度守恒
+                this.noiseTime = Math.random() * 1000;
+                this.isBursting = false;
+                this.burstTimer = 0;
+            }
+
+            update(centerX, centerY, scale, brightness) {
+                if (this.type === 'core') {
+                    // 核心粒子：围绕中心轻微振动
+                    this.x = centerX + Math.cos(this.angle) * this.distance * scale * 0.3;
+                    this.y = centerY + Math.sin(this.angle) * this.distance * scale * 0.3;
+                    this.angle += 0.02;
+                } else {
+                    // 环形粒子：开普勒定律运动
+                    if (!this.isBursting) {
+                        // 正常轨道运动
+                        this.angle += this.speed * (1 + palmOpenness * 0.5);
+                        this.x = centerX + Math.cos(this.angle) * this.distance * scale;
+                        this.y = centerY + Math.sin(this.angle) * this.distance * scale;
+                    } else {
+                        // 炸开状态：混沌运动
+                        this.x += this.vx + (Math.random() - 0.5) * 4;
+                        this.y += this.vy + (Math.random() - 0.5) * 4;
+                        this.vx *= 0.98;
+                        this.vy *= 0.98;
+                        this.burstTimer--;
+                        if (this.burstTimer <= 0) {
+                            this.isBursting = false;
+                        }
+                    }
+                }
+
+                // 噪点运动效果（当粒子靠近屏幕边缘或缩放很大时）
+                if (scale > CONFIG.NOISE_THRESHOLD) {
+                    const noiseIntensity = (scale - CONFIG.NOISE_THRESHOLD) / (1 - CONFIG.NOISE_THRESHOLD);
+                    this.noiseTime += 0.1;
+                    const noiseX = Math.sin(this.noiseTime * 0.3) * noiseIntensity * 5;
+                    const noiseY = Math.cos(this.noiseTime * 0.5) * noiseIntensity * 5;
+                    this.x += noiseX;
+                    this.y += noiseY;
+                }
+
+                // 检查是否需要炸开
+                if (scale > CONFIG.BURST_THRESHOLD && !this.isBursting) {
+                    this.isBursting = true;
+                    this.burstTimer = 60;
+                    this.vx = (Math.random() - 0.5) * 10;
+                    this.vy = (Math.random() - 0.5) * 10;
+                }
+
+                // 调整亮度
+                this.brightness = brightness;
+            }
+
+            draw(ctx) {
+                ctx.save();
+                ctx.globalAlpha = this.brightness;
+                ctx.fillStyle = this.color;
+                ctx.beginPath();
+                ctx.arc(this.x, this.y, this.radius * (1 + palmOpenness * 0.5), 0, Math.PI * 2);
+                ctx.fill();
+                
+                // 添加光晕效果
+                const gradient = ctx.createRadialGradient(this.x, this.y, 0, this.x, this.y, this.radius * 3);
+                gradient.addColorStop(0, this.color + '80');
+                gradient.addColorStop(1, this.color + '00');
+                ctx.fillStyle = gradient;
+                ctx.beginPath();
+                ctx.arc(this.x, this.y, this.radius * 3, 0, Math.PI * 2);
+                ctx.fill();
+                
+                ctx.restore();
+            }
+        }
+
+        // 初始化粒子系统
+        function initParticles() {
+            particles = [];
+            const centerX = canvas.width / 2;
+            const centerY = canvas.height / 2;
+
+            // 创建核心粒子
+            for (let i = 0; i < CONFIG.CORE_PARTICLES; i++) {
+                const radius = Math.random() * 3 + 1;
+                const color = `hsl(45, 100%, ${60 + Math.random() * 40}%)`;
+                particles.push(new Particle('core', centerX, centerY, 0, 0, radius, color));
+            }
+
+            // 创建环形粒子
+            for (let i = 0; i < CONFIG.RING_PARTICLES; i++) {
+                const distance = Math.random() * (CONFIG.MAX_DISTANCE - CONFIG.MIN_DISTANCE) + CONFIG.MIN_DISTANCE;
+                const angle = Math.random() * Math.PI * 2;
+                const x = centerX + Math.cos(angle) * distance;
+                const y = centerY + Math.sin(angle) * distance;
+                const radius = Math.random() * 2 + 0.5;
+                const hue = 200 + Math.random() * 40;
+                const color = `hsl(${hue}, 70%, ${50 + Math.random() * 30}%)`;
+                particles.push(new Particle('ring', x, y, 0, 0, radius, color));
+            }
+        }
+
+        // 手势检测
+        class PalmDetector {
+            constructor(videoElement) {
+                this.video = videoElement;
+                this.isReady = false;
+                this.hands = null;
+                this.setup();
+            }
+
+            async setup() {
+                try {
+                    // 加载MediaPipe Hands库
+                    await this.loadMediaPipe();
+                    this.isReady = true;
+                    document.getElementById('loading').style.display = 'none';
+                } catch (error) {
+                    console.error('手势检测初始化失败:', error);
+                    // 失败时使用模拟模式
+                    this.isReady = true;
+                    document.getElementById('loading').style.display = 'none';
+                }
+            }
+
+            async loadMediaPipe() {
+                // 动态加载MediaPipe Hands库
+                const script = document.createElement('script');
+                script.src = 'https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1646424915/mediapipe-hands.min.js';
+                document.head.appendChild(script);
+                
+                await new Promise(resolve => script.onload = resolve);
+                
+                // 初始化Hands模型
+                this.hands = new Hands({
+                    locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1646424915/${file}`
+                });
+                
+                this.hands.setOptions({
+                    maxNumHands: 1,
+                    minDetectionConfidence: 0.7,
+                    minTrackingConfidence: 0.7
+                });
+            }
+
+            async detect() {
+                if (!this.isReady) return 0.5;
+                
+                if (this.hands) {
+                    try {
+                        const results = await this.hands.process({ image: this.video });
+                        if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+                            const landmarks = results.multiHandLandmarks[0];
+                            return this.calculateOpenness(landmarks);
+                        }
+                    } catch (error) {
+                        console.error('手势检测失败:', error);
+                    }
+                }
+                
+                // 降级到模拟模式
+                const target = 0.3 + Math.random() * 0.4;
+                palmOpenness = palmOpenness * 0.9 + target * 0.1;
+                return palmOpenness;
+            }
+
+            calculateOpenness(landmarks) {
+                // 计算手掌张合度：通过手指尖与掌根的距离
+                const palmBase = landmarks[0];
+                const thumbTip = landmarks[4];
+                const indexTip = landmarks[8];
+                const middleTip = landmarks[12];
+                const ringTip = landmarks[16];
+                const pinkyTip = landmarks[20];
+                
+                // 计算各手指与掌根的距离
+                const distances = [
+                    this.getDistance(palmBase, thumbTip),
+                    this.getDistance(palmBase, indexTip),
+                    this.getDistance(palmBase, middleTip),
+                    this.getDistance(palmBase, ringTip),
+                    this.getDistance(palmBase, pinkyTip)
+                ];
+                
+                // 归一化距离到0-1范围
+                const maxDistance = Math.max(...distances);
+                const minDistance = Math.min(...distances);
+                const openness = (maxDistance - minDistance) / (0.15 - 0.02); // 近似归一化
+                
+                return Math.max(0, Math.min(1, openness));
+            }
+
+            getDistance(point1, point2) {
+                const dx = point1.x - point2.x;
+                const dy = point1.y - point2.y;
+                return Math.sqrt(dx * dx + dy * dy);
+            }
+        }
+
+        // 更新粒子
+        function updateParticles() {
+            const centerX = canvas.width / 2;
+            const centerY = canvas.height / 2;
+
+            particles.forEach(particle => {
+                particle.update(centerX, centerY, scale, brightness);
+            });
+        }
+
+        // 绘制粒子
+        function drawParticles() {
+            particles.forEach(particle => {
+                particle.draw(ctx);
+            });
+        }
+
+        // 绘制背景
+        function drawBackground() {
+            // 创建渐变背景
+            const gradient = ctx.createRadialGradient(canvas.width/2, canvas.height/2, 0, canvas.width/2, canvas.height/2, Math.max(canvas.width, canvas.height));
+            gradient.addColorStop(0, '#0a0a2e');
+            gradient.addColorStop(0.5, '#1a1a2e');
+            gradient.addColorStop(1, '#0f0f1e');
+            ctx.fillStyle = gradient;
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+            // 添加星星背景
+            ctx.fillStyle = '#ffffff';
+            for (let i = 0; i < 100; i++) {
+                const x = Math.random() * canvas.width;
+                const y = Math.random() * canvas.height;
+                const radius = Math.random() * 1.5;
+                ctx.beginPath();
+                ctx.arc(x, y, radius, 0, Math.PI * 2);
+                ctx.fill();
+            }
+        }
+
+        // 动画循环
+        function animate() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            
+            drawBackground();
+            updateParticles();
+            drawParticles();
+
+            animationId = requestAnimationFrame(animate);
+        }
+
+        // 更新缩放和亮度
+        function updateScaleAndBrightness() {
+            scale = palmOpenness;
+            // 亮度随大小变化：小暗大亮
+            brightness = CONFIG.BRIGHTNESS_MIN + (CONFIG.BRIGHTNESS_MAX - CONFIG.BRIGHTNESS_MIN) * scale;
+        }
+
+        // 手势检测循环
+        async function detectLoop() {
+            await detector.detect();
+            updateScaleAndBrightness();
+            setTimeout(detectLoop, 100);
+        }
+
+        // 初始化摄像头
+        async function initCamera() {
+            try {
+                // 移动端优化：使用更适合移动端的摄像头配置
+                const constraints = {
+                    video: {
+                        facingMode: 'user',
+                        width: {
+                            ideal: 640,
+                            min: 320,
+                            max: 1280
+                        },
+                        height: {
+                            ideal: 480,
+                            min: 240,
+                            max: 720
+                        },
+                        frameRate: {
+                            ideal: 30,
+                            min: 15
+                        }
+                    }
+                };
+                
+                // 检测设备类型，移动端优先使用前置摄像头
+                const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
+                if (isMobile) {
+                    constraints.video.facingMode = 'user';
+                }
+                
+                const stream = await navigator.mediaDevices.getUserMedia(constraints);
+                video.srcObject = stream;
+                video.play();
+                await new Promise(resolve => video.onloadedmetadata = resolve);
+                return true;
+            } catch (error) {
+                console.error('摄像头初始化失败:', error);
+                document.getElementById('loading').innerHTML = '<p>摄像头访问失败</p>';
+                return false;
+            }
+        }
+
+        // 调整画布大小
+        function resizeCanvas() {
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
+        }
+
+        // 全屏控制
+        function toggleFullscreen() {
+            if (!isFullscreen) {
+                if (document.documentElement.requestFullscreen) {
+                    document.documentElement.requestFullscreen();
+                } else if (document.documentElement.webkitRequestFullscreen) {
+                    document.documentElement.webkitRequestFullscreen();
+                } else if (document.documentElement.msRequestFullscreen) {
+                    document.documentElement.msRequestFullscreen();
+                }
+                isFullscreen = true;
+            } else {
+                if (document.exitFullscreen) {
+                    document.exitFullscreen();
+                } else if (document.webkitExitFullscreen) {
+                    document.webkitExitFullscreen();
+                } else if (document.msExitFullscreen) {
+                    document.msExitFullscreen();
+                }
+                isFullscreen = false;
+            }
+        }
+
+        // 事件监听
+        function setupEventListeners() {
+            window.addEventListener('resize', resizeCanvas);
+            document.getElementById('fullscreen').addEventListener('click', toggleFullscreen);
+
+            // 全屏变化事件
+            document.addEventListener('fullscreenchange', () => {
+                isFullscreen = !!document.fullscreenElement;
+            });
+            document.addEventListener('webkitfullscreenchange', () => {
+                isFullscreen = !!document.webkitFullscreenElement;
+            });
+            document.addEventListener('MSFullscreenChange', () => {
+                isFullscreen = !!document.msFullscreenElement;
+            });
+
+            // 移动端触摸支持
+            let touchStartX, touchStartY;
+            canvas.addEventListener('touchstart', (e) => {
+                e.preventDefault();
+                touchStartX = e.touches[0].clientX;
+                touchStartY = e.touches[0].clientY;
+            });
+
+            canvas.addEventListener('touchmove', (e) => {
+                e.preventDefault();
+                // 触摸手势：上下滑动调整缩放
+                const touchY = e.touches[0].clientY;
+                const deltaY = touchY - touchStartY;
+                palmOpenness = Math.max(0, Math.min(1, palmOpenness - deltaY * 0.005));
+                touchStartY = touchY;
+            });
+
+            // 设备方向变化
+            window.addEventListener('orientationchange', () => {
+                resizeCanvas();
+                // 重置粒子位置以适应新的屏幕尺寸
+                initParticles();
+            });
+
+            // 阻止默认触摸行为
+            document.addEventListener('touchmove', (e) => {
+                e.preventDefault();
+            }, { passive: false });
+        }
+
+        // 初始化应用
+        async function init() {
+            canvas = document.getElementById('canvas');
+            ctx = canvas.getContext('2d');
+            video = document.getElementById('camera');
+
+            resizeCanvas();
+            setupEventListeners();
+
+            const cameraReady = await initCamera();
+            if (cameraReady) {
+                detector = new PalmDetector(video);
+                initParticles();
+                animate();
+                detectLoop();
+            }
+        }
+
+        // 启动应用
+        window.addEventListener('DOMContentLoaded', init);
+    </script>
+</body>
+</html>
